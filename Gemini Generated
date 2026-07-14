@@ -1,0 +1,118 @@
+import json
+import re
+from typing import List, Dict, Any, Tuple
+
+def build_and_validate_rag_entry(
+    team_id: str,
+    run_id: str,
+    run_desc: str,
+    narrative_id: str,
+    narrative: str,
+    raw_sentences: List[Tuple[str, List[str]]]
+) -> Dict[str, Any]:
+    """
+    将模型生成的原始(句子, 原始docids)列表，构建为符合 TREC RAG 2026 规范的单条数据，并进行严格校验。
+    
+    参数:
+    - raw_sentences: 格式为 [("句子内容1", ["docid_A", "docid_B"]), ("句子内容2", ["docid_B"])]
+    """
+    
+    # 1. 收集并过滤所有被实际引用到的 references (保持原始出现顺序且去重)
+    references = []
+    seen_refs = set()
+    for _, docids in raw_sentences:
+        for docid in docids:
+            # 严格控制单句引用上限不超过 3 个
+            if len(docids) > 3:
+                raise ValueError(f"校验失败: 句子引用的文档数量超过了 3 个限制：'{docids}'")
+                
+            if docid not in seen_refs:
+                seen_refs.add(docid)
+                references.append(docid)
+                
+    # 2. 构建答案数组，并将原始 docid 映射为 references 中的 0-indexed 索引
+    answer_list = []
+    total_words = 0
+    
+    for sentence_text, docids in raw_sentences:
+        # 计算单词数 (简单按空格和非字母划分，确保在英文环境下准确)
+        words_in_sentence = len(re.findall(r'\b\w+\b', sentence_text))
+        total_words += words_in_sentence
+        
+        # 建立索引映射
+        citations = [references.index(docid) for docid in docids]
+        
+        answer_list.append({
+            "text": sentence_text,
+            "citations": citations
+        })
+        
+    # 3. 校验总字数
+    if total_words > 1024:
+        raise ValueError(f"校验失败: 回答字数 ({total_words} 词) 超过了 1024 词的限制。")
+        
+    # 4. 校验“无冗余引用”：确保 references 里的每一个文档都至少被引用了一次
+    all_cited_indices = set()
+    for ans in answer_list:
+        all_cited_indices.update(ans["citations"])
+    
+    if len(all_cited_indices) != len(references):
+        raise ValueError("校验失败: references 数组中存在未被任何句子引用的冗余文档 ID。")
+
+    # 5. 组装官方格式对象
+    rag_object = {
+        "metadata": {
+            "team_id": team_id,
+            "narrative_id": narrative_id,
+            "narrative": narrative,
+            "run_id": run_id,
+            "run_desc": run_desc
+        },
+        "references": references,
+        "answer": answer_list
+    }
+    
+    return rag_object
+
+
+# ==========================================
+# 示例：如何使用该函数构建并写入 JSONL 文件
+# ==========================================
+if __name__ == "__main__":
+    # 模拟从 trec_rag_2026_queries.tsv 中读取的输入数据
+    topic_id = "rag2026-37"
+    topic_text = "I work for a New York City council member..."
+
+    # 模拟您的模型检索、生成并拆分句子后的输出结果
+    # 格式为: (句子文本, [支持该句子的原始文档ID列表])
+    model_raw_outputs = [
+        (
+            "Congestion pricing should be assessed by whether it can provide reliable dedicated revenue.",
+            ["shard_00459_61697", "shard_01012_88420"]
+        ),
+        (
+            "A credible plan should also explain how environmental impacts and delivery concerns will be monitored.",
+            ["shard_01012_88420", "shard_00210_44018"]
+        )
+    ]
+
+    try:
+        # 构建并运行内部校验
+        json_line_data = build_and_validate_rag_entry(
+            team_id="my-awesome-team",
+            run_id="baseline-bm25-rag",
+            run_desc="BM25 top-100 ClimbMix retrieval with LLM-grounded sentences.",
+            narrative_id=topic_id,
+            narrative=topic_text,
+            raw_sentences=model_raw_outputs
+        )
+        
+        # 写入 RAG 提交要求的 JSONL 格式文件
+        output_filename = "rag_output_trec_rag_2026.jsonl"
+        with open(output_filename, "a", encoding="utf-8") as f:
+            f.write(json.dumps(json_line_data, ensure_ascii=False) + "\n")
+            
+        print(f"成功构建并写入一条记录到 {output_filename}！数据已通过所有硬性校验。")
+        
+    except ValueError as e:
+        print(f"构建失败: {e}")
