@@ -1,0 +1,447 @@
+import asyncio
+import random
+import re
+from abc import ABC, abstractmethod
+from enum import Enum
+from typing import Any
+
+from ftfy import fix_text
+
+from ragnarok.data import Request, Result, remove_unused_references
+
+
+class PromptMode(Enum):
+    UNSPECIFIED = "unspecified"
+    COHERE = "cohere"
+    CHATQA = "chatqa"
+    RAGNAROK_V2 = "ragnarok_v2"
+    RAGNAROK_V3 = "ragnarok_v3"
+    RAGNAROK_V4 = "ragnarok_v4"
+    RAGNAROK_V4_BIOGEN = "ragnarok_v4_biogen"
+    RAGNAROK_V5_BIOGEN = "ragnarok_v5_biogen"
+    RAGNAROK_V5_BIOGEN_NO_CITE = "ragnarok_v5_biogen_no_cite"
+    RAGNAROK_V4_NO_CITE = "ragnarok_v4_no_cite"
+
+    def __str__(self):
+        return self.value
+
+
+SUPPORTED_TEMPLATE_PROMPT_MODES = (
+    PromptMode.CHATQA,
+    PromptMode.RAGNAROK_V2,
+    PromptMode.RAGNAROK_V3,
+    PromptMode.RAGNAROK_V4,
+    PromptMode.RAGNAROK_V4_BIOGEN,
+    PromptMode.RAGNAROK_V5_BIOGEN,
+    PromptMode.RAGNAROK_V5_BIOGEN_NO_CITE,
+    PromptMode.RAGNAROK_V4_NO_CITE,
+)
+
+
+class LLM(ABC):
+    def __init__(
+        self,
+        model: str,
+        context_size: int,
+        prompt_mode: PromptMode,
+        max_output_tokens: int = 1500,
+        num_few_shot_examples: int = 0,
+        store_reasoning: bool = False,
+    ) -> None:
+        self._model = model
+        self._context_size = context_size
+        self._prompt_mode = prompt_mode
+        self._num_few_shot_examples = num_few_shot_examples
+        self._output_token_estimate = max_output_tokens
+        self._store_reasoning = store_reasoning
+
+    def max_tokens(self) -> int:
+        """
+        Returns the maximum number of tokens for a given model
+
+        Returns:
+            int: The maximum token count.
+        """
+        return self._context_size
+
+    @abstractmethod
+    def run_llm(
+        self, prompt: str | list[dict[str, Any]], logging: bool = False
+    ) -> tuple[Any, int]:
+        """
+        Abstract method to run the target language model with a passed in prompt.
+
+        Args:
+            prompt (Union[str, List[Dict[str, str]]]): The prompt to be processed by the model.
+            logging (bool, optional): Flag to enable logging of operations. Defaults to False.
+
+        Returns:
+            Tuple[Any, int]: A tuple object containing the answer response and the number of tokens in the response.
+        """
+        pass
+
+    @abstractmethod
+    def create_prompt(
+        self, request: Request, topk: int
+    ) -> tuple[str | list[dict[str, str]], int]:
+        """
+        Abstract method to create a prompt based on the request and given topk.
+
+        Args:
+            request (Result): The request object containing data for prompt generation.
+            topk (int): The topk ranks considered for prompt generation.
+
+        Returns:
+            Tuple[Union[str, List[Dict[str, str]]], int]: A tuple object containing the generated prompt and the number of tokens in the generated prompt.
+        """
+        pass
+
+    @abstractmethod
+    def get_num_tokens(self, prompt: str | list[dict[str, str]]) -> int:
+        """
+        Abstract method to calculate the number of tokens contained in the given prompt.
+
+        Args:
+            prompt (Union[str, List[Dict[str, str]]]): The prompt for which to compute the token count for.
+
+        Returns:
+            int: The number of tokens in the given prompt.
+        """
+        pass
+
+    @abstractmethod
+    def cost_per_1k_token(self, input_token: bool) -> float:
+        """
+        Abstract method to calculate the cost per 1,000 tokens for the target language model.
+
+        Args:
+            input_token (bool): Flag to indicate if the cost is for input tokens or output tokens.
+
+        Returns:
+            float: The cost per 1,000 tokens.
+        """
+        pass
+
+    def answer(
+        self,
+        request: Request,
+        topk: int,
+        shuffle_candidates: bool = False,
+        logging: bool = False,
+    ) -> Result:
+        """
+        Answer a given request using the target language model.
+
+        Args:
+            request (Request): The request object to process.
+            topk (int): The topk ranks to consider for the generation process.
+            shuffle_candidates (bool, optional): Flag to shuffle candidates before processing. Defaults to False.
+            logging (bool, optional): Flag to enable logging of operations. Defaults to False.
+
+        Returns:
+            Result: The result object after answering the request.
+        """
+        return self.answer_batch(
+            [request],
+            topk,
+            shuffle_candidates=shuffle_candidates,
+            logging=logging,
+        )[0]
+
+    def answer_batch(
+        self,
+        requests: list[Request],
+        topk: int,
+        shuffle_candidates: bool = False,
+        logging: bool = False,
+        vllm: bool = False,
+    ) -> list[Result]:
+        """
+        Answer a list of requests using the target language model.
+
+        Args:
+            requests (List[Request]): The list of requests to process.
+            topk (int): The topk ranks to consider for the generation process.
+            shuffle_candidates (bool, optional): Flag to shuffle candidates before processing. Defaults to False.
+            logging (bool, optional): Flag to enable logging of operations. Defaults to False.
+            vllm (bool, optional): Flag to enable VLLM mode. Defaults to False.
+
+        Returns:
+            List[Result]: The list of results after answering the requests.
+        """
+        initial_results = []
+        results = []
+        for request in requests:
+            if shuffle_candidates:
+                # First randomly shuffle rerank_result in first topk ranks
+                request.candidates[:topk] = random.sample(
+                    request.candidates[:topk],
+                    len(request.candidates[:topk]),
+                )
+        if vllm:
+            prompt_input_token_count_list = self.create_prompt_batched(requests, topk)
+            prompts = [prompt for prompt, _ in prompt_input_token_count_list]
+            answer_rag_exec_info_list = self.run_llm_batched(prompts, logging)
+            answers = [answer for answer, _ in answer_rag_exec_info_list]
+            rag_exec_summary = [
+                rag_exec_info for _, rag_exec_info in answer_rag_exec_info_list
+            ]
+            for request, answer, rag_exec_info in zip(
+                requests, answers, rag_exec_summary, strict=True
+            ):
+                result = Result(
+                    query=request.query,
+                    references=[cand.docid for cand in request.candidates[:topk]],
+                    answer=answer,
+                    rag_exec_summary=rag_exec_info,
+                )
+                initial_results.append(result)
+        else:
+            for request in requests:
+                prompt, input_token_count = self.create_prompt(request, topk)
+                answer, rag_exec_summary = self.run_llm(prompt, logging)
+                rag_exec_summary.candidates = [
+                    candidate.__dict__ for candidate in request.candidates[:topk]
+                ]
+                result = Result(
+                    query=request.query,
+                    references=[cand.docid for cand in request.candidates[:topk]],
+                    answer=answer,
+                    rag_exec_summary=rag_exec_summary,
+                )
+                initial_results.append(result)
+        for result in initial_results:
+            cleaned_result = remove_unused_references(result)
+            results.append(cleaned_result)
+        return results
+
+    async def async_run_llm(
+        self, prompt: str | list[dict[str, Any]], logging: bool = False
+    ) -> tuple[Any, int]:
+        return await asyncio.to_thread(self.run_llm, prompt, logging)
+
+    async def async_answer(
+        self,
+        request: Request,
+        topk: int,
+        shuffle_candidates: bool = False,
+        logging: bool = False,
+    ) -> Result:
+        return (
+            await self.async_answer_batch(
+                [request],
+                topk,
+                shuffle_candidates=shuffle_candidates,
+                logging=logging,
+            )
+        )[0]
+
+    async def async_answer_batch(
+        self,
+        requests: list[Request],
+        topk: int,
+        shuffle_candidates: bool = False,
+        logging: bool = False,
+        vllm: bool = False,
+        max_concurrency: int = 8,
+    ) -> list[Result]:
+        if vllm:
+            return await asyncio.to_thread(
+                self.answer_batch,
+                requests,
+                topk,
+                shuffle_candidates,
+                logging,
+                vllm,
+            )
+
+        if shuffle_candidates:
+            for request in requests:
+                request.candidates[:topk] = random.sample(
+                    request.candidates[:topk],
+                    len(request.candidates[:topk]),
+                )
+
+        semaphore = asyncio.Semaphore(max(1, max_concurrency))
+
+        async def answer_one(request: Request) -> Result:
+            async with semaphore:
+                prompt, _input_token_count = self.create_prompt(request, topk)
+                answer, rag_exec_summary = await self.async_run_llm(prompt, logging)
+                rag_exec_summary.candidates = [
+                    candidate.__dict__ for candidate in request.candidates[:topk]
+                ]
+                result = Result(
+                    query=request.query,
+                    references=[cand.docid for cand in request.candidates[:topk]],
+                    answer=answer,
+                    rag_exec_summary=rag_exec_summary,
+                )
+                return remove_unused_references(result)
+
+        return await asyncio.gather(*(answer_one(request) for request in requests))
+
+    def num_output_tokens(self) -> int:
+        return self._output_token_estimate
+
+    def _extract_reasoning_from_message(self, message: Any) -> str | None:
+        if not self._store_reasoning or message is None:
+            return None
+        if hasattr(message, "reasoning") and message.reasoning:
+            return str(message.reasoning).strip()
+        if hasattr(message, "reasoning_content") and message.reasoning_content:
+            return str(message.reasoning_content).strip()
+        if isinstance(message, dict):
+            if message.get("reasoning"):
+                return str(message["reasoning"]).strip()
+            if message.get("reasoning_content"):
+                return str(message["reasoning_content"]).strip()
+        model_extra = getattr(message, "model_extra", None)
+        if isinstance(model_extra, dict):
+            if model_extra.get("reasoning"):
+                return str(model_extra["reasoning"]).strip()
+            if model_extra.get("reasoning_content"):
+                return str(model_extra["reasoning_content"]).strip()
+        return None
+
+    def _extract_reasoning_from_responses_output(
+        self, response: Any, prefer_direct_reasoning: bool = False
+    ) -> str | None:
+        if not self._store_reasoning or response is None:
+            return None
+        reasoning_parts: list[str] = []
+        for item in getattr(response, "output", []):
+            item_type = getattr(item, "type", None)
+            if item_type is None and isinstance(item, dict):
+                item_type = item.get("type")
+            if item_type != "reasoning":
+                continue
+            direct_parts: list[str] = []
+            summaries = getattr(item, "summary", None)
+            if summaries is None and isinstance(item, dict):
+                summaries = item.get("summary", [])
+            summary_parts: list[str] = []
+            for summary in summaries or []:
+                if isinstance(summary, str):
+                    summary_parts.append(summary.strip())
+                    continue
+                summary_type = getattr(summary, "type", None)
+                if summary_type is None and isinstance(summary, dict):
+                    summary_type = summary.get("type")
+                if summary_type not in (None, "summary_text"):
+                    continue
+                summary_text = getattr(summary, "text", None)
+                if summary_text is None and isinstance(summary, dict):
+                    summary_text = summary.get("text")
+                if summary_text:
+                    summary_parts.append(str(summary_text).strip())
+            direct_reasoning = getattr(item, "reasoning", None)
+            if direct_reasoning is None and isinstance(item, dict):
+                direct_reasoning = item.get("reasoning")
+            if direct_reasoning:
+                direct_parts.append(str(direct_reasoning).strip())
+            direct_reasoning_content = getattr(item, "reasoning_content", None)
+            if direct_reasoning_content is None and isinstance(item, dict):
+                direct_reasoning_content = item.get("reasoning_content")
+            if direct_reasoning_content:
+                direct_parts.append(str(direct_reasoning_content).strip())
+            item_content = getattr(item, "content", None)
+            if item_content is None and isinstance(item, dict):
+                item_content = item.get("content", [])
+            for content in item_content or []:
+                if isinstance(content, str):
+                    direct_parts.append(content.strip())
+                    continue
+                content_text = getattr(content, "text", None)
+                if content_text is None and isinstance(content, dict):
+                    content_text = content.get("text")
+                if content_text:
+                    direct_parts.append(str(content_text).strip())
+            reasoning_parts.extend(
+                direct_parts or summary_parts
+                if prefer_direct_reasoning
+                else summary_parts or direct_parts
+            )
+        return "\n".join(part for part in reasoning_parts if part) or None
+
+    def _extract_text_from_responses_output(self, response: Any) -> str:
+        if response is None:
+            return ""
+        output_text = getattr(response, "output_text", None)
+        if output_text:
+            return str(output_text)
+        text_parts: list[str] = []
+        for item in getattr(response, "output", []):
+            item_type = getattr(item, "type", None)
+            if item_type is None and isinstance(item, dict):
+                item_type = item.get("type")
+            if item_type != "message":
+                continue
+            content_items = getattr(item, "content", None)
+            if content_items is None and isinstance(item, dict):
+                content_items = item.get("content", [])
+            for content in content_items or []:
+                content_type = getattr(content, "type", None)
+                if content_type is None and isinstance(content, dict):
+                    content_type = content.get("type")
+                if content_type != "output_text":
+                    continue
+                content_text = getattr(content, "text", None)
+                if content_text is None and isinstance(content, dict):
+                    content_text = content.get("text")
+                if content_text:
+                    text_parts.append(str(content_text))
+        return "\n".join(text_parts)
+
+    def _extract_reasoning_from_text(self, response: str) -> tuple[str | None, str]:
+        if response is None:
+            return None, ""
+        reasoning_blocks = [
+            block.strip()
+            for block in re.findall(r"<think>(.*?)</think>", response, flags=re.DOTALL)
+            if block.strip()
+        ]
+        cleaned_response = re.sub(
+            r"<think>.*?</think>", "", response, flags=re.DOTALL
+        ).strip()
+        reasoning = None
+        if self._store_reasoning and reasoning_blocks:
+            reasoning = "\n\n".join(reasoning_blocks)
+        return reasoning, fix_text(cleaned_response)
+
+    def _replace_number(self, s: str) -> str:
+        return re.sub(r"\[(\d+)\]", r"(\1)", s)
+
+    def supports_template_prompt_mode(self, prompt_mode: PromptMode) -> bool:
+        return prompt_mode in SUPPORTED_TEMPLATE_PROMPT_MODES
+
+    def convert_doc_to_prompt_content(
+        self, doc: dict[str, Any], max_length: int
+    ) -> str:
+        if "text" in doc:
+            content = doc["text"]
+        elif "segment" in doc:
+            content = doc["segment"]
+        elif "contents" in doc:
+            content = doc["contents"]
+        else:
+            content = doc["passage"]
+        if "title" in doc and doc["title"]:
+            content = "Title: " + doc["title"] + " " + "Content: " + content
+        content = content.strip()
+        content = fix_text(content)
+        content = content.replace("\n", " ")
+        content = " ".join(content.split()[: int(max_length)])
+        return self._replace_number(content)
+
+    def build_ranked_context(
+        self,
+        request: Request,
+        topk: int,
+        max_length: int,
+    ) -> list[str]:
+        context = []
+        for rank, candidate in enumerate(request.candidates[:topk], start=1):
+            content = self.convert_doc_to_prompt_content(candidate.doc, max_length)
+            context.append(f"[{rank}] {self._replace_number(content)}")
+        return context

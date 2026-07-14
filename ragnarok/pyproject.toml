@@ -1,0 +1,223 @@
+[build-system]
+requires = ["setuptools>=61.0.0", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "pyragnarok"
+version = "0.0.1"
+description = "A package to running RAG models, especially for the TREC 2023 Retrieval Augmented Generation (RAG) track."
+readme = "README.md"
+authors = [
+    { name = "Ronak Pradeep", email = "rpradeep@uwaterloo.ca" },
+]
+license = { file = "LICENSE" }
+classifiers = [
+    "Programming Language :: Python",
+    "Programming Language :: Python :: 3",
+    "Programming Language :: Python :: 3.12",
+]
+keywords = ["Retrieval-Augmented Generation", "RAG", "OpenAI", "Cohere", "TREC", "LLM"]
+requires-python = ">= 3.12"
+dependencies = [
+    "dacite>=1.8.1",
+    "ftfy>=6.2.0",
+    "python-dotenv>=1.0.1",
+    "requests>=2.32.0",
+    "tqdm>=4.66.2",
+]
+
+[project.optional-dependencies]
+cloud = [
+    "cohere>=5.3.4",
+    "openai>=1.30.5",
+    "tiktoken>=0.6.0",
+]
+local = [
+    "fschat[model_worker]>=0.2.36",
+    "spacy==3.7.2",
+    "stanza>=1.8.2",
+    "torch",
+    "torchaudio",
+    "torchvision",
+    "transformers>=4.40.1",
+    "vllm>=0.4.3",
+]
+api = [
+    "fastapi>=0.115.0",
+    "gradio==4.26.0",
+    "pandas>=2.2.2",
+    "uvicorn>=0.30.0",
+]
+pyserini = [
+    "pyserini>=0.44.0",
+]
+all = [
+    "cohere>=5.3.4",
+    "openai>=1.30.5",
+    "tiktoken>=0.6.0",
+    "fschat[model_worker]>=0.2.36",
+    "spacy==3.7.2",
+    "stanza>=1.8.2",
+    "torch",
+    "torchaudio",
+    "torchvision",
+    "transformers>=4.40.1",
+    "vllm>=0.4.3",
+    "fastapi>=0.115.0",
+    "gradio==4.26.0",
+    "pandas>=2.2.2",
+    "pyserini>=0.44.0",
+    "uvicorn>=0.30.0",
+]
+
+[dependency-groups]
+dev = [
+    "fastapi>=0.115.0",
+    "httpx>=0.27.0",
+    "mypy>=1.11.2",
+    "pre-commit>=3.8.0",
+    "pytest>=8.4.2",
+    "ruff>=0.12.0",
+    "shtab>=1.7.0",
+    "uvicorn>=0.30.0",
+]
+
+[project.urls]
+Homepage = "https://github.com/castorini/ragnarok"
+
+[project.scripts]
+ragnarok = "ragnarok.cli.main:main"
+ragnarok-quality-gate = "ragnarok.scripts.quality_gate:main"
+
+[tool.bumpver]
+current_version = "0.0.1"
+version_pattern = "MAJOR.MINOR.PATCH"
+commit_message = "Bump version {old_version} -> {new_version}"
+commit = true
+tag = true
+push = false
+
+[tool.bumpver.file_patterns]
+"pyproject.toml" = [
+    'current_version = "{version}"', 'version = "{version}"'
+]
+"README.md" = [
+    "{version}",
+]
+
+[tool.ruff]
+target-version = "py312"
+
+[tool.ruff.lint]
+select = ["E", "F", "I", "UP", "B"]
+ignore = ["E501"]
+
+[tool.ruff.lint.per-file-ignores]
+"src/ragnarok/demo/*.py" = ["E402"]
+
+[tool.setuptools.packages.find]
+where = ["src"]
+include = [
+    "ragnarok",
+    "ragnarok.api",
+    "ragnarok.cli",
+    "ragnarok.demo",
+    "ragnarok.generate",
+    "ragnarok.generate.templates",
+    "ragnarok.prompts",
+    "ragnarok.retrieve_and_rerank",
+    "ragnarok.scripts",
+]
+namespaces = false
+
+[tool.setuptools.package-data]
+"ragnarok.prompts" = ["prompt_templates/*.yaml"]
+
+[tool.setuptools]
+provides = ["ragnarok"]
+
+[tool.mypy]
+files = ["src", "test"]
+explicit_package_bases = true
+mypy_path = "src"
+check_untyped_defs = true
+disallow_untyped_defs = true
+disallow_incomplete_defs = true
+no_implicit_optional = true
+strict_optional = true
+warn_redundant_casts = true
+warn_unused_ignores = true
+warn_return_any = true
+cache_dir = ".mypy_cache"
+incremental = true
+
+[[tool.mypy.overrides]]
+module = [
+    "cohere",
+    "dacite",
+    "dotenv",
+    "dotenv.*",
+    "fastapi",
+    "fastapi.*",
+    "fastchat",
+    "fastchat.*",
+    "ftfy",
+    "gradio",
+    "gradio.*",
+    "openai",
+    "openai.*",
+    "pandas",
+    "pandas.*",
+    "pyserini",
+    "pyserini.*",
+    "rank_llm",
+    "rank_llm.*",
+    "requests",
+    "spacy",
+    "spacy.*",
+    "stanza",
+    "stanza.*",
+    "tiktoken",
+    "torch",
+    "torch.*",
+    "transformers",
+    "transformers.*",
+    "tqdm",
+    "yaml",
+    "uvicorn",
+    "vllm",
+    "vllm.*",
+]
+ignore_missing_imports = true
+
+[[tool.mypy.overrides]]
+module = [
+    "ragnarok.api.blocks.*",
+    "ragnarok.api.elo",
+    "ragnarok.api.populate_sql",
+    "ragnarok.data",
+    "ragnarok.demo.*",
+    "ragnarok.generate.*",
+    "ragnarok.retrieve_and_generate",
+    "ragnarok.retrieve_and_rerank.*",
+    "ragnarok.scripts.check_trec_rag24_gen",
+    "ragnarok.scripts.convert_to_trec25_format",
+    "ragnarok.scripts.query_cache",
+    "ragnarok.scripts.validate_trec_rag25_gen",
+    "test.evaluation.test_check_trec_rag24_gen",
+    "test.retrieve.test_PyseriniRetriever",
+    "test.test_cli_main",
+    "test.analysis.test_reasoning_support",
+    "test.test_live_openai_smoke",
+]
+ignore_errors = true
+
+[tool.pytest.ini_options]
+testpaths = ["test"]
+python_files = ["test_*.py", "integration_*.py"]
+markers = [
+    "core: deterministic unit and CLI regression coverage",
+    "integration: deterministic offline end-to-end regression coverage",
+    "live: provider-backed smoke coverage that requires explicit opt-in",
+]
+addopts = "--strict-markers"

@@ -1,0 +1,516 @@
+import asyncio
+import time
+from enum import Enum
+from typing import Any
+
+import openai
+import tiktoken
+
+from ragnarok.data import RAGExecInfo, Request
+from ragnarok.generate.llm import LLM, SUPPORTED_TEMPLATE_PROMPT_MODES, PromptMode
+from ragnarok.generate.post_processor import GPTPostProcessor
+from ragnarok.generate.templates.ragnarok_templates import RagnarokTemplates
+
+
+class SafeOpenai(LLM):
+    SUPPORTED_REASONING_EFFORTS = (
+        "none",
+        "minimal",
+        "low",
+        "medium",
+        "high",
+        "xhigh",
+    )
+
+    def __init__(
+        self,
+        model: str,
+        context_size: int,
+        prompt_mode: PromptMode = PromptMode.CHATQA,
+        max_output_tokens: int = 1500,
+        num_few_shot_examples: int = 0,
+        store_reasoning: bool = False,
+        reasoning_effort: str | None = None,
+        keys=None,
+        key_start_id=None,
+        proxy=None,
+        api_type: str = None,
+        api_base: str = None,
+        api_version: str = None,
+    ) -> None:
+        """
+        Creates instance of the SafeOpenai class, a specialized version of RankLLM designed for safely handling OpenAI API calls with
+        support for key cycling, proxy configuration, and Azure AI conditional integration.
+
+        Parameters:
+        - model (str): The model identifier for the LLM (model identifier information can be found via OpenAI's model lists).
+        - context_size (int): The maximum number of tokens that the model can handle in a single request.
+        - prompt_mode (PromptMode, optional): Specifies the mode of prompt generation, with the default set to RANK_GPT,
+         indicating that this class is designed primarily for listwise ranking tasks following the RANK_GPT methodology.
+        - max_output_tokens (int, optional): Maximum number of tokens that can be generated in a single response. Defaults to 1500.
+        - num_few_shot_examples (int, optional): Number of few-shot learning examples to include in the prompt, allowing for
+        the integration of example-based learning to improve model performance. Defaults to 0, indicating no few-shot examples
+        by default.
+        - keys (Union[List[str], str], optional): A list of OpenAI API keys or a single OpenAI API key.
+        - key_start_id (int, optional): The starting index for the OpenAI API key cycle.
+        - proxy (str, optional): The proxy configuration for OpenAI API calls.
+        - api_type (str, optional): The type of API service, if using Azure AI as the backend.
+        - api_base (str, optional): The base URL for the API, applicable when using Azure AI.
+        - api_version (str, optional): The API version, necessary for Azure AI integration.
+
+        Raises:
+        - ValueError: If an unsupported prompt mode is provided or if no OpenAI API keys / invalid OpenAI API keys are supplied.
+
+        Note:
+        - This class supports cycling between multiple OpenAI API keys to distribute quota usage or handle rate limiting.
+        - Azure AI integration is depends on the presence of `api_type`, `api_base`, and `api_version`.
+        """
+        super().__init__(
+            model,
+            context_size,
+            prompt_mode,
+            max_output_tokens,
+            num_few_shot_examples,
+            store_reasoning=store_reasoning,
+        )
+        if isinstance(keys, str):
+            keys = [keys]
+        if not keys:
+            raise ValueError("Please provide OpenAI Keys.")
+        if prompt_mode not in SUPPORTED_TEMPLATE_PROMPT_MODES:
+            raise ValueError(
+                f"unsupported prompt mode for GPT models: {prompt_mode}, expected one of {PromptMode.CHATQA}, {PromptMode.RAGNAROK_V2}, {PromptMode.RAGNAROK_V3}, {PromptMode.RAGNAROK_V4}, {PromptMode.RAGNAROK_V4_NO_CITE}."
+            )
+
+        self._keys = keys
+        self._cur_key_id = key_start_id or 0
+        self._cur_key_id = self._cur_key_id % len(self._keys)
+        self._post_processor = GPTPostProcessor()
+        if (
+            reasoning_effort is not None
+            and reasoning_effort not in self.SUPPORTED_REASONING_EFFORTS
+        ):
+            raise ValueError(
+                "Unsupported reasoning_effort: "
+                f"{reasoning_effort}. Expected one of "
+                f"{', '.join(self.SUPPORTED_REASONING_EFFORTS)}."
+            )
+        self._reasoning_effort = reasoning_effort
+        self._api_type = api_type
+        self._api_base = api_base
+        self._api_version = api_version
+        self._async_client = None
+        self._async_client_key_id = None
+        self._sync_client = None
+        self._sync_client_key_id = None
+        self._async_key_lock = asyncio.Lock()
+        openai.proxy = proxy
+        openai.api_key = self._keys[self._cur_key_id]
+        self.use_azure_ai = False
+
+        if all([api_type, api_base, api_version]):
+            # See https://learn.microsoft.com/en-US/azure/ai-services/openai/reference for list of supported versions
+            openai.api_version = api_version
+            openai.api_type = api_type
+            openai.api_base = api_base
+            self.use_azure_ai = True
+
+    def _build_reasoning_params(self) -> dict[str, Any]:
+        if self._reasoning_effort is None:
+            return {}
+        if self._api_base and "openrouter.ai" in self._api_base:
+            return {
+                "extra_body": {
+                    "reasoning": {
+                        "effort": self._reasoning_effort,
+                        "exclude": False,
+                    }
+                }
+            }
+        return {"reasoning_effort": self._reasoning_effort}
+
+    def _uses_reasoning_style_api(self) -> bool:
+        return (
+            "o1" in self._model
+            or "o3" in self._model
+            or "o4" in self._model
+            or "gpt-5" in self._model
+        )
+
+    def _uses_responses_reasoning_api(self) -> bool:
+        return self._reasoning_effort is not None and self._uses_reasoning_style_api()
+
+    def _normalize_messages(
+        self, messages: list[dict[str, str]]
+    ) -> list[dict[str, str]]:
+        if "o1" in self._model or "o3" in self._model or "o4" in self._model:
+            normalized_messages = [message.copy() for message in messages[1:]]
+            normalized_messages[0]["content"] = (
+                messages[0]["content"] + "\n" + messages[1]["content"]
+            )
+            return normalized_messages
+        return messages
+
+    def _build_responses_params(self, messages: list[dict[str, str]]) -> dict[str, Any]:
+        return {
+            "model": self._model,
+            "input": [
+                {
+                    "type": "message",
+                    "role": message["role"],
+                    "content": [
+                        {
+                            "type": "input_text",
+                            "text": message["content"],
+                        }
+                    ],
+                }
+                for message in self._normalize_messages(messages)
+            ],
+            "max_output_tokens": self.num_output_tokens(),
+            "timeout": 30,
+            "reasoning": {
+                "effort": self._reasoning_effort,
+                "summary": "auto",
+            },
+        }
+
+    def _create_sync_client(self, key_id: int) -> Any:
+        api_key = self._keys[key_id]
+        if self.use_azure_ai:
+            client_cls = getattr(openai, "AzureOpenAI", None)
+            if client_cls is None:
+                from openai import AzureOpenAI
+
+                client_cls = AzureOpenAI
+            return client_cls(
+                api_key=api_key,
+                api_version=self._api_version,
+                azure_endpoint=self._api_base,
+            )
+        client_cls = getattr(openai, "OpenAI", None)
+        if client_cls is None:
+            from openai import OpenAI
+
+            client_cls = OpenAI
+        client_kwargs: dict[str, Any] = {"api_key": api_key}
+        if self._api_base:
+            client_kwargs["base_url"] = self._api_base
+        return client_cls(**client_kwargs)
+
+    def _get_sync_client(self) -> Any:
+        if self._sync_client is None or self._sync_client_key_id != self._cur_key_id:
+            self._sync_client = self._create_sync_client(self._cur_key_id)
+            self._sync_client_key_id = self._cur_key_id
+        return self._sync_client
+
+    def _rotate_sync_key(self) -> Any:
+        self._cur_key_id = (self._cur_key_id + 1) % len(self._keys)
+        openai.api_key = self._keys[self._cur_key_id]
+        self._sync_client = self._create_sync_client(self._cur_key_id)
+        self._sync_client_key_id = self._cur_key_id
+        return self._sync_client
+
+    def _create_async_client(self, key_id: int) -> Any:
+        api_key = self._keys[key_id]
+        if self.use_azure_ai:
+            client_cls = getattr(openai, "AsyncAzureOpenAI", None)
+            if client_cls is None:
+                from openai import AsyncAzureOpenAI
+
+                client_cls = AsyncAzureOpenAI
+            return client_cls(
+                api_key=api_key,
+                api_version=self._api_version,
+                azure_endpoint=self._api_base,
+            )
+        client_cls = getattr(openai, "AsyncOpenAI", None)
+        if client_cls is None:
+            from openai import AsyncOpenAI
+
+            client_cls = AsyncOpenAI
+        client_kwargs: dict[str, Any] = {"api_key": api_key}
+        if self._api_base:
+            client_kwargs["base_url"] = self._api_base
+        return client_cls(**client_kwargs)
+
+    async def _get_async_client(self) -> Any:
+        async with self._async_key_lock:
+            if (
+                self._async_client is None
+                or self._async_client_key_id != self._cur_key_id
+            ):
+                self._async_client = self._create_async_client(self._cur_key_id)
+                self._async_client_key_id = self._cur_key_id
+            return self._async_client
+
+    async def _rotate_async_key(self) -> Any:
+        async with self._async_key_lock:
+            self._cur_key_id = (self._cur_key_id + 1) % len(self._keys)
+            openai.api_key = self._keys[self._cur_key_id]
+            self._async_client = self._create_async_client(self._cur_key_id)
+            self._async_client_key_id = self._cur_key_id
+            return self._async_client
+
+    class CompletionMode(Enum):
+        UNSPECIFIED = 0
+        CHAT = 1
+        TEXT = 2
+
+    def _call_completion(
+        self,
+        *args,
+        completion_mode: CompletionMode,
+        reduce_length=False,
+        **kwargs,
+    ) -> Any:
+        while True:
+            try:
+                if completion_mode == self.CompletionMode.CHAT:
+                    completion = openai.chat.completions.create(
+                        *args, **kwargs, timeout=30
+                    )
+                elif completion_mode == self.CompletionMode.TEXT:
+                    completion = openai.Completion.create(*args, **kwargs)
+                else:
+                    raise ValueError(f"Unsupported completion mode: {completion_mode}")
+                break
+            except Exception as e:
+                print(str(e))
+                if "This model's maximum context length is" in str(e):
+                    print("reduce_length")
+                    return "ERROR::reduce_length"
+                if "The response was filtered" in str(e):
+                    print("The response was filtered")
+                    return "ERROR::The response was filtered"
+                self._cur_key_id = (self._cur_key_id + 1) % len(self._keys)
+                openai.api_key = self._keys[self._cur_key_id]
+                time.sleep(0.1)
+        return completion
+
+    def _call_responses(self, **kwargs: Any) -> Any:
+        while True:
+            try:
+                client = self._get_sync_client()
+                return client.responses.create(**kwargs)
+            except Exception as e:
+                print(str(e))
+                if "This model's maximum context length is" in str(e):
+                    print("reduce_length")
+                    return "ERROR::reduce_length"
+                if "The response was filtered" in str(e):
+                    print("The response was filtered")
+                    return "ERROR::The response was filtered"
+                self._rotate_sync_key()
+                time.sleep(0.1)
+
+    def run_llm(
+        self,
+        prompt: str | list[dict[str, str]],
+        logging: bool = False,
+    ) -> tuple[str, RAGExecInfo]:
+        if logging:
+            print(f"Prompt: {prompt}")
+        normalized_prompt = self._normalize_messages(prompt)
+        completion_params: dict[str, Any] = {
+            "messages": normalized_prompt,
+            "temperature": 0.1,
+            "completion_mode": SafeOpenai.CompletionMode.CHAT,
+            "model": self._model,
+        }
+        if self._uses_responses_reasoning_api():
+            response = self._call_responses(**self._build_responses_params(prompt))
+            response_text = self._extract_text_from_responses_output(response)
+            reasoning = self._extract_reasoning_from_responses_output(
+                response,
+                prefer_direct_reasoning=bool(
+                    self._api_base and "openrouter.ai" in self._api_base
+                ),
+            )
+        else:
+            completion_params.update(self._build_reasoning_params())
+            response = self._call_completion(**completion_params)
+            message = response.choices[0].message
+            response_text = message.content or ""
+            reasoning = self._extract_reasoning_from_message(message)
+        tagged_reasoning, cleaned_response = self._extract_reasoning_from_text(
+            response_text
+        )
+        if reasoning is None:
+            reasoning = tagged_reasoning
+        try:
+            tiktoken.get_encoding(self._model)
+        except Exception:
+            tiktoken.get_encoding("cl100k_base")
+        if logging:
+            print(f"Response: {cleaned_response}")
+        answers, rag_exec_response = self._post_processor(cleaned_response)
+        if logging:
+            print(f"Answers: {answers}")
+        rag_exec_info = RAGExecInfo(
+            prompt=prompt,
+            response=rag_exec_response,
+            input_token_count=self.get_num_tokens(prompt),
+            output_token_count=sum([len(ans.text) for ans in answers]),
+            reasoning=reasoning,
+            candidates=[],
+        )
+        if logging:
+            print(f"RAG Exec Info: {rag_exec_info}")
+        return answers, rag_exec_info
+
+    async def _call_completion_async(
+        self,
+        *args,
+        completion_mode: CompletionMode,
+        reduce_length=False,
+        **kwargs,
+    ) -> Any:
+        while True:
+            try:
+                client = await self._get_async_client()
+                if completion_mode == self.CompletionMode.CHAT:
+                    completion = await client.chat.completions.create(
+                        *args, **kwargs, timeout=30
+                    )
+                elif completion_mode == self.CompletionMode.TEXT:
+                    completion = await client.completions.create(*args, **kwargs)
+                else:
+                    raise ValueError(f"Unsupported completion mode: {completion_mode}")
+                break
+            except Exception as e:
+                print(str(e))
+                if "This model's maximum context length is" in str(e):
+                    print("reduce_length")
+                    return "ERROR::reduce_length"
+                if "The response was filtered" in str(e):
+                    print("The response was filtered")
+                    return "ERROR::The response was filtered"
+                await self._rotate_async_key()
+                await asyncio.sleep(0.1)
+        return completion
+
+    async def async_run_llm(
+        self,
+        prompt: str | list[dict[str, str]],
+        logging: bool = False,
+    ) -> tuple[str, RAGExecInfo]:
+        if logging:
+            print(f"Prompt: {prompt}")
+        normalized_prompt = self._normalize_messages(prompt)
+        completion_params: dict[str, Any] = {
+            "messages": normalized_prompt,
+            "temperature": 0.1,
+            "completion_mode": SafeOpenai.CompletionMode.CHAT,
+            "model": self._model,
+        }
+        if self._uses_responses_reasoning_api():
+            client = await self._get_async_client()
+            response = await client.responses.create(
+                **self._build_responses_params(prompt)
+            )
+            response_text = self._extract_text_from_responses_output(response)
+            reasoning = self._extract_reasoning_from_responses_output(
+                response,
+                prefer_direct_reasoning=bool(
+                    self._api_base and "openrouter.ai" in self._api_base
+                ),
+            )
+        else:
+            completion_params.update(self._build_reasoning_params())
+            response = await self._call_completion_async(**completion_params)
+            message = response.choices[0].message
+            response_text = message.content or ""
+            reasoning = self._extract_reasoning_from_message(message)
+        tagged_reasoning, cleaned_response = self._extract_reasoning_from_text(
+            response_text
+        )
+        if reasoning is None:
+            reasoning = tagged_reasoning
+        try:
+            tiktoken.get_encoding(self._model)
+        except Exception:
+            tiktoken.get_encoding("cl100k_base")
+        if logging:
+            print(f"Response: {cleaned_response}")
+        answers, rag_exec_response = self._post_processor(cleaned_response)
+        if logging:
+            print(f"Answers: {answers}")
+        rag_exec_info = RAGExecInfo(
+            prompt=prompt,
+            response=rag_exec_response,
+            input_token_count=self.get_num_tokens(prompt),
+            output_token_count=sum([len(ans.text) for ans in answers]),
+            reasoning=reasoning,
+            candidates=[],
+        )
+        if logging:
+            print(f"RAG Exec Info: {rag_exec_info}")
+        return answers, rag_exec_info
+
+    def create_prompt(
+        self, request: Request, topk: int
+    ) -> tuple[list[dict[str, str]], int]:
+        query = request.query.text
+        max_length = (self._context_size - 200) // topk
+        while True:
+            context = self.build_ranked_context(request, topk, max_length)
+            if self.supports_template_prompt_mode(self._prompt_mode):
+                ragnarok_template = RagnarokTemplates(self._prompt_mode)
+                messages = ragnarok_template(query, context, "gpt")
+            else:
+                raise ValueError(
+                    f"Unsupported prompt mode: {self._prompt_mode}, expected one of CHATQA or RAGNAROK_V..."
+                )
+            num_tokens = self.get_num_tokens(messages)
+            if num_tokens <= self.max_tokens() - self.num_output_tokens():
+                break
+            else:
+                max_length -= max(
+                    1,
+                    (num_tokens - self.max_tokens() + self.num_output_tokens())
+                    // (topk * 4),
+                )
+        return messages, self.get_num_tokens(messages)
+
+    def get_num_tokens(self, prompt: str | list[dict[str, str]]) -> int:
+        """Returns the number of tokens used by a list of messages in prompt."""
+        if self._model in ["gpt-3.5-turbo-0301", "gpt-3.5-turbo"]:
+            tokens_per_message = (
+                4  # every message follows <|start|>{role/name}\n{content}<|end|>\n
+            )
+            tokens_per_name = -1  # if there's a name, the role is omitted
+        elif self._model in ["gpt-4-0314", "gpt-4"]:
+            tokens_per_message = 3
+            tokens_per_name = 1
+        else:
+            tokens_per_message, tokens_per_name = 0, 0
+
+        try:
+            encoding = tiktoken.get_encoding(self._model)
+        except Exception:
+            encoding = tiktoken.get_encoding("cl100k_base")
+
+        num_tokens = 0
+        if isinstance(prompt, list):
+            for message in prompt:
+                num_tokens += tokens_per_message
+                for key, value in message.items():
+                    num_tokens += len(encoding.encode(value))
+                    if key == "name":
+                        num_tokens += tokens_per_name
+        else:
+            num_tokens += len(encoding.encode(prompt))
+        num_tokens += 3  # every reply is primed with <|start|>assistant<|message|>
+        return num_tokens
+
+    def cost_per_1k_token(self, input_token: bool) -> float:
+        # Brought in from https://openai.com/pricing on 2023-07-30
+        cost_dict = {
+            ("gpt-3.5", 4096): 0.0015 if input_token else 0.002,
+            ("gpt-3.5", 16384): 0.003 if input_token else 0.004,
+            ("gpt-4", 8192): 0.03 if input_token else 0.06,
+            ("gpt-4", 32768): 0.06 if input_token else 0.12,
+        }
+        model_key = "gpt-3.5" if "gpt-3" in self._model else "gpt-4"
+        return cost_dict[(model_key, self._context_size)]

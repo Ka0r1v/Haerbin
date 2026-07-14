@@ -1,0 +1,29 @@
+default_install_hook_types: [pre-commit, pre-push]
+
+repos:
+  - repo: local
+    hooks:
+      - id: uv-lock-check
+        name: uv lock check
+        entry: uv lock --check
+        language: system
+        pass_filenames: false
+        stages: [pre-commit, pre-push]
+  - repo: https://github.com/astral-sh/ruff-pre-commit
+    rev: v0.12.0
+    hooks:
+      - id: ruff-check
+        types_or: [python, pyi]
+        args: [--fix]
+        stages: [pre-commit]
+      - id: ruff-format
+        types_or: [python, pyi]
+        stages: [pre-commit]
+  - repo: local
+    hooks:
+      - id: ragnarok-quality-gate
+        name: ragnarok quality gate
+        entry: uv run ragnarok-quality-gate
+        language: system
+        pass_filenames: false
+        stages: [pre-commit, pre-push]
