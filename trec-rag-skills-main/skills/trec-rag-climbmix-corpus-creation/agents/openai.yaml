@@ -1,0 +1,4 @@
+interface:
+  display_name: "TREC RAG ClimbMix Corpus Creation"
+  short_description: "Create TREC RAG ClimbMix corpora and docids"
+  default_prompt: "Use $trec-rag-climbmix-corpus-creation to create a TREC RAG ClimbMix corpus with official docids for custom indexing."
