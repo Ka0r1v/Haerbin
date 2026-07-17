@@ -41,7 +41,7 @@
 
 相对 BM25，最终 v3 的 nDCG@10 提高 `0.1303`，Recall@1000 提高 `0.0759`，MAP 提高 `0.0556`。Recall@100 略有下降，说明当前系统更擅长重新排列和扩大深层候选池，但浅层召回仍是下一阶段的主要优化点。
 
-三套官方开发 qrels 的稳定性、完整消融和每项技术的取舍见 [advanced_retrieval_v3.md](retrieval_mvp/reports/advanced_retrieval_v3.md)。
+完整的版本演进、实现方式和逐阶段结果见 [V1 → V2 → V3 完整说明](retrieval_mvp/reports/v1-v2-v3.md)。三套官方开发 qrels 的稳定性、完整消融和每项技术的取舍见 [advanced_retrieval_v3.md](retrieval_mvp/reports/advanced_retrieval_v3.md)。
 
 ### RAGDoll Top-10 诊断
 

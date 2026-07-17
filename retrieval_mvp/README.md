@@ -1,5 +1,7 @@
 # TREC RAG 2026 Retrieval MVP
 
+如果希望先理解项目如何从最小 baseline 演进到当前系统，请阅读 [`reports/v1-v2-v3.md`](reports/v1-v2-v3.md)。该文档按 V1、V2、V3 解释每次改动、实现文件、实验结果与结论。
+
 当前已经跑通的检索链路：
 
 ```text
