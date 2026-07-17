@@ -1,0 +1,436 @@
+{
+  "version": "2.0.0",
+  "tasks": [
+    {
+      "label": "MVP: Health check",
+      "type": "process",
+      "command": "python",
+      "args": ["retrieval_mvp/src/healthcheck.py"],
+      "options": { "cwd": "${workspaceFolder}" },
+      "problemMatcher": []
+    },
+    {
+      "label": "MVP: Unit tests",
+      "type": "process",
+      "command": "python",
+      "args": ["-m", "unittest", "discover", "retrieval_mvp/tests", "-v"],
+      "options": { "cwd": "${workspaceFolder}" },
+      "problemMatcher": []
+    },
+    {
+      "label": "MVP: Smoke retrieval (1 topic, 5 hits)",
+      "type": "process",
+      "command": "python",
+      "args": [
+        "retrieval_mvp/src/retrieve.py",
+        "--limit",
+        "1",
+        "--hits",
+        "5",
+        "--output",
+        "retrieval_mvp/runs/smoke.tsv"
+      ],
+      "options": { "cwd": "${workspaceFolder}" },
+      "problemMatcher": []
+    },
+    {
+      "label": "MVP: Validate smoke run",
+      "type": "process",
+      "command": "python",
+      "args": [
+        "retrieval_mvp/src/validate_run.py",
+        "retrieval_mvp/runs/smoke.tsv",
+        "--allow-subset",
+        "--expected-hits",
+        "5"
+      ],
+      "options": { "cwd": "${workspaceFolder}" },
+      "problemMatcher": []
+    },
+    {
+      "label": "MVP: Full development retrieval",
+      "type": "process",
+      "command": "python",
+      "args": ["retrieval_mvp/src/retrieve.py"],
+      "options": { "cwd": "${workspaceFolder}" },
+      "problemMatcher": []
+    },
+    {
+      "label": "MVP: Validate development run",
+      "type": "process",
+      "command": "python",
+      "args": [
+        "retrieval_mvp/src/validate_run.py",
+        "retrieval_mvp/runs/haerbin-bm25-dev.tsv",
+        "--expected-hits",
+        "1000"
+      ],
+      "options": { "cwd": "${workspaceFolder}" },
+      "problemMatcher": []
+    },
+    {
+      "label": "MVP: Evaluate development run",
+      "type": "process",
+      "command": "python",
+      "args": [
+        "retrieval_mvp/src/evaluate_run.py",
+        "retrieval_mvp/runs/haerbin-bm25-dev.tsv"
+      ],
+      "options": { "cwd": "${workspaceFolder}" },
+      "problemMatcher": []
+    },
+    {
+      "label": "MVP: Generate heuristic rewrites",
+      "type": "process",
+      "command": "python",
+      "args": ["retrieval_mvp/src/query_rewrite.py"],
+      "options": { "cwd": "${workspaceFolder}" },
+      "problemMatcher": []
+    },
+    {
+      "label": "MVP: Multi-query smoke",
+      "type": "process",
+      "command": "python",
+      "args": [
+        "retrieval_mvp/src/retrieve_multiquery.py",
+        "--limit",
+        "1",
+        "--hits-per-query",
+        "10",
+        "--output-hits",
+        "50",
+        "--output",
+        "retrieval_mvp/runs/multiquery-smoke.tsv"
+      ],
+      "options": { "cwd": "${workspaceFolder}" },
+      "problemMatcher": []
+    },
+    {
+      "label": "MVP: Full weighted multi-query development retrieval",
+      "type": "process",
+      "command": "python",
+      "args": [
+        "retrieval_mvp/src/retrieve_multiquery.py",
+        "--baseline-run",
+        "retrieval_mvp/runs/haerbin-bm25-dev.tsv",
+        "--baseline-weight",
+        "4",
+        "--output",
+        "retrieval_mvp/runs/haerbin-weighted-rrf-dev.tsv",
+        "--run-id",
+        "haerbin-weighted-rrf"
+      ],
+      "options": { "cwd": "${workspaceFolder}" },
+      "problemMatcher": []
+    },
+    {
+      "label": "MVP: Validate weighted multi-query development run",
+      "type": "process",
+      "command": "python",
+      "args": [
+        "retrieval_mvp/src/validate_run.py",
+        "retrieval_mvp/runs/haerbin-weighted-rrf-dev.tsv",
+        "--expected-hits",
+        "1000"
+      ],
+      "options": { "cwd": "${workspaceFolder}" },
+      "problemMatcher": []
+    },
+    {
+      "label": "MVP: Evaluate weighted multi-query development run",
+      "type": "process",
+      "command": "python",
+      "args": [
+        "retrieval_mvp/src/evaluate_run.py",
+        "retrieval_mvp/runs/haerbin-weighted-rrf-dev.tsv",
+        "--rel-threshold",
+        "2"
+      ],
+      "options": { "cwd": "${workspaceFolder}" },
+      "problemMatcher": []
+    },
+    {
+      "label": "MVP: DeepSeek weighted RRF",
+      "type": "process",
+      "command": "python",
+      "args": [
+        "retrieval_mvp/src/retrieve_multiquery.py",
+        "--provider",
+        "llm",
+        "--no-fallback",
+        "--baseline-run",
+        "retrieval_mvp/runs/haerbin-bm25-dev.tsv",
+        "--baseline-weight",
+        "4",
+        "--output",
+        "retrieval_mvp/runs/deepseek-weight-4.tsv",
+        "--run-id",
+        "haerbin-deepseek-weight-4"
+      ],
+      "options": { "cwd": "${workspaceFolder}" },
+      "problemMatcher": []
+    },
+    {
+      "label": "MVP: Semantic rerank (GPU)",
+      "type": "process",
+      "command": "${workspaceFolder}\\.venv\\Scripts\\python.exe",
+      "args": [
+        "retrieval_mvp/src/rerank.py",
+        "retrieval_mvp/runs/deepseek-weight-4.tsv",
+        "--output",
+        "retrieval_mvp/runs/haerbin-deepseek-semantic-dev.tsv",
+        "--device",
+        "cuda",
+        "--batch-size",
+        "64",
+        "--original-weight",
+        "4",
+        "--semantic-weight",
+        "1",
+        "--run-id",
+        "haerbin-deepseek-semantic"
+      ],
+      "options": { "cwd": "${workspaceFolder}" },
+      "problemMatcher": []
+    },
+    {
+      "label": "MVP: Validate semantic run",
+      "type": "process",
+      "command": "python",
+      "args": [
+        "retrieval_mvp/src/validate_run.py",
+        "retrieval_mvp/runs/haerbin-deepseek-semantic-dev.tsv",
+        "--expected-hits",
+        "1000"
+      ],
+      "options": { "cwd": "${workspaceFolder}" },
+      "problemMatcher": []
+    },
+    {
+      "label": "MVP: Evaluate semantic run",
+      "type": "process",
+      "command": "python",
+      "args": [
+        "retrieval_mvp/src/evaluate_run.py",
+        "retrieval_mvp/runs/haerbin-deepseek-semantic-dev.tsv",
+        "--rel-threshold",
+        "2"
+      ],
+      "options": { "cwd": "${workspaceFolder}" },
+      "problemMatcher": []
+    },
+    {
+      "label": "MVP: MiniLM pure semantic ranking",
+      "type": "process",
+      "command": "${workspaceFolder}\\.venv\\Scripts\\python.exe",
+      "args": [
+        "retrieval_mvp/src/rerank.py",
+        "retrieval_mvp/runs/deepseek-weight-4.tsv",
+        "--original-weight", "0",
+        "--semantic-weight", "1",
+        "--device", "cuda",
+        "--batch-size", "64",
+        "--output", "retrieval_mvp/runs/deepseek-semantic-original-0.tsv",
+        "--run-id", "haerbin-minilm-pure"
+      ],
+      "options": { "cwd": "${workspaceFolder}" },
+      "problemMatcher": []
+    },
+    {
+      "label": "MVP: BGE pure rerank (GPU)",
+      "type": "process",
+      "command": "${workspaceFolder}\\.venv\\Scripts\\python.exe",
+      "args": [
+        "retrieval_mvp/src/rerank.py",
+        "retrieval_mvp/runs/deepseek-weight-4.tsv",
+        "--model", "BAAI/bge-reranker-v2-m3",
+        "--depth", "1000",
+        "--dtype", "float16",
+        "--device", "cuda",
+        "--batch-size", "16",
+        "--original-weight", "0",
+        "--semantic-weight", "1",
+        "--output", "retrieval_mvp/runs/bge-pure.tsv",
+        "--run-id", "haerbin-bge-pure"
+      ],
+      "options": { "cwd": "${workspaceFolder}" },
+      "problemMatcher": []
+    },
+    {
+      "label": "MVP: Build balanced ensemble",
+      "type": "process",
+      "command": "python",
+      "args": [
+        "retrieval_mvp/src/fuse_runs.py",
+        "--run", "retrieval_mvp/runs/deepseek-weight-4.tsv=4",
+        "--run", "retrieval_mvp/runs/deepseek-semantic-original-0.tsv=1",
+        "--run", "retrieval_mvp/runs/bge-pure.tsv=1",
+        "--output", "retrieval_mvp/runs/haerbin-balanced-ensemble-dev.tsv",
+        "--run-id", "haerbin-balanced-ensemble"
+      ],
+      "options": { "cwd": "${workspaceFolder}" },
+      "problemMatcher": []
+    },
+    {
+      "label": "MVP: Build recall-safe ensemble",
+      "type": "process",
+      "command": "python",
+      "args": [
+        "retrieval_mvp/src/fuse_runs.py",
+        "--run", "retrieval_mvp/runs/deepseek-weight-4.tsv=4",
+        "--run", "retrieval_mvp/runs/haerbin-bm25-dev.tsv=4",
+        "--run", "retrieval_mvp/runs/deepseek-semantic-original-0.tsv=0.5",
+        "--run", "retrieval_mvp/runs/bge-pure.tsv=1",
+        "--output", "retrieval_mvp/runs/haerbin-recall-safe-dev.tsv",
+        "--run-id", "haerbin-recall-safe"
+      ],
+      "options": { "cwd": "${workspaceFolder}" },
+      "problemMatcher": []
+    },
+    {
+      "label": "MVP: Analyze final runs",
+      "type": "process",
+      "command": "python",
+      "args": [
+        "retrieval_mvp/src/analyze_runs.py",
+        "--run", "BM25=retrieval_mvp/runs/haerbin-bm25-dev.tsv",
+        "--run", "Balanced=retrieval_mvp/runs/haerbin-balanced-ensemble-dev.tsv",
+        "--run", "Recall-safe=retrieval_mvp/runs/haerbin-recall-safe-dev.tsv"
+      ],
+      "options": { "cwd": "${workspaceFolder}" },
+      "problemMatcher": []
+    },
+    {
+      "label": "MVP: Export balanced Top-100 candidates",
+      "type": "process",
+      "command": "python",
+      "args": [
+        "retrieval_mvp/src/export_candidates.py",
+        "retrieval_mvp/runs/haerbin-balanced-ensemble-dev.tsv",
+        "--topk", "100",
+        "--output", "retrieval_mvp/candidates/haerbin-balanced-top100.jsonl"
+      ],
+      "options": { "cwd": "${workspaceFolder}" },
+      "problemMatcher": []
+    },
+    {
+      "label": "MVP v2: Build balanced Top-1000 from cache",
+      "type": "process",
+      "command": "${workspaceFolder}\\.venv\\Scripts\\python.exe",
+      "args": [
+        "retrieval_mvp/src/rerank.py",
+        "retrieval_mvp/runs/deep5000-minilm-o4.tsv",
+        "--model", "BAAI/bge-reranker-v2-m3",
+        "--depth", "1000",
+        "--dtype", "float16",
+        "--device", "cuda",
+        "--batch-size", "16",
+        "--original-weight", "2",
+        "--semantic-weight", "1",
+        "--output-hits", "1000",
+        "--output", "retrieval_mvp/runs/haerbin-balanced-v2-dev.tsv",
+        "--run-id", "haerbin-balanced-v2"
+      ],
+      "options": { "cwd": "${workspaceFolder}" },
+      "problemMatcher": []
+    },
+    {
+      "label": "MVP v2: NIST official evaluation",
+      "type": "process",
+      "command": "python",
+      "args": [
+        "retrieval_mvp/src/official_eval.py",
+        "retrieval_mvp/runs/haerbin-balanced-v2-deep-dev.tsv",
+        "--rel-threshold", "2"
+      ],
+      "options": { "cwd": "${workspaceFolder}" },
+      "problemMatcher": []
+    },
+    {
+      "label": "MVP v3: Build SQLite document store",
+      "type": "process",
+      "command": "${workspaceFolder}\\.venv\\Scripts\\python.exe",
+      "args": ["retrieval_mvp/src/build_docstore.py", "retrieval_mvp/runs/deepseek-deep5000.tsv"],
+      "options": { "cwd": "${workspaceFolder}" },
+      "problemMatcher": []
+    },
+    {
+      "label": "MVP v3: ColBERT Top-100 from cache",
+      "type": "process",
+      "command": "${workspaceFolder}\\.venv\\Scripts\\python.exe",
+      "args": [
+        "retrieval_mvp/src/colbert_rerank.py",
+        "retrieval_mvp/runs/hybrid-final-b8-d1.tsv",
+        "--depth", "100",
+        "--original-weight", "8",
+        "--colbert-weight", "1",
+        "--output", "retrieval_mvp/runs/colbert-top100-o8.tsv",
+        "--run-id", "colbert-top100-o8"
+      ],
+      "options": {
+        "cwd": "${workspaceFolder}",
+        "env": { "HF_HUB_OFFLINE": "1", "TRANSFORMERS_OFFLINE": "1" }
+      },
+      "problemMatcher": []
+    },
+    {
+      "label": "MVP v3: Dense hybrid scoring (GPU/cache)",
+      "type": "process",
+      "command": "${workspaceFolder}\\.venv\\Scripts\\python.exe",
+      "args": [
+        "retrieval_mvp/src/dense_rerank.py",
+        "retrieval_mvp/runs/deepseek-deep5000.tsv",
+        "--depth", "5000",
+        "--original-weight", "2",
+        "--dense-weight", "1",
+        "--output", "retrieval_mvp/runs/dense-hybrid-o2.tsv",
+        "--run-id", "dense-hybrid-o2"
+      ],
+      "options": { "cwd": "${workspaceFolder}" },
+      "problemMatcher": []
+    },
+    {
+      "label": "MVP v3: Fuse Balanced and Dense",
+      "type": "process",
+      "command": "python",
+      "args": [
+        "retrieval_mvp/src/fuse_runs.py",
+        "--run", "retrieval_mvp/runs/haerbin-balanced-v2-deep-dev.tsv=8",
+        "--run", "retrieval_mvp/runs/dense-hybrid-o2.tsv=1",
+        "--hits", "5000",
+        "--output", "retrieval_mvp/runs/hybrid-final-b8-d1.tsv",
+        "--run-id", "hybrid-final-b8-d1"
+      ],
+      "options": { "cwd": "${workspaceFolder}" },
+      "problemMatcher": []
+    },
+    {
+      "label": "MVP v3: RankLLM Top-20 from cache",
+      "type": "process",
+      "command": "${workspaceFolder}\\.venv\\Scripts\\python.exe",
+      "args": [
+        "retrieval_mvp/src/rankllm_rerank.py",
+        "retrieval_mvp/runs/colbert-top100-o8.tsv",
+        "--depth", "20",
+        "--original-weight", "8",
+        "--rankllm-weight", "1",
+        "--output", "retrieval_mvp/runs/haerbin-hybrid-v3-dev.tsv",
+        "--run-id", "haerbin-hybrid-v3"
+      ],
+      "options": { "cwd": "${workspaceFolder}" },
+      "problemMatcher": []
+    },
+    {
+      "label": "MVP v3: NIST official evaluation",
+      "type": "process",
+      "command": "python",
+      "args": [
+        "retrieval_mvp/src/official_eval.py",
+        "retrieval_mvp/runs/haerbin-hybrid-v3-dev.tsv",
+        "--rel-threshold", "2"
+      ],
+      "options": { "cwd": "${workspaceFolder}" },
+      "problemMatcher": []
+    }
+  ]
+}

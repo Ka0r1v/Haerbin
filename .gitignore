@@ -1,0 +1,20 @@
+# Local credentials. Never commit these files.
+.env
+.env.*
+!.env.example
+!**/.env.example
+.curlrc.pyserini-rest
+
+# Retrieval MVP runtime artifacts.
+retrieval_mvp/cache/
+retrieval_mvp/runs/
+retrieval_mvp/candidates/
+retrieval_mvp/tools/trec_eval/
+retrieval_mvp/tools/ragdoll/
+retrieval_mvp/tools/pi/
+
+# Python artifacts.
+__pycache__/
+*.py[cod]
+.pytest_cache/
+.venv/
