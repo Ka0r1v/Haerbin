@@ -13,7 +13,7 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Callable, Iterable
 from urllib.error import HTTPError, URLError
-from urllib.parse import urlencode
+from urllib.parse import quote, urlencode
 from urllib.request import Request, urlopen
 
 
@@ -137,6 +137,30 @@ def search_api(
 ) -> dict[str, Any]:
     params = urlencode({"query": query, "hits": hits})
     url = f"{base_url.rstrip('/')}/v1/{index}/search?{params}"
+    for attempt in range(retries + 1):
+        try:
+            return request_json(url, token, timeout)
+        except RetrievalError:
+            if attempt >= retries:
+                raise
+            time.sleep(min(2**attempt, 8))
+    raise AssertionError("unreachable")
+
+
+def fetch_document_api(
+    *,
+    base_url: str,
+    index: str,
+    docid: str,
+    token: str,
+    timeout: float,
+    retries: int,
+) -> dict[str, Any]:
+    """Fetch one stored document through the official REST document endpoint."""
+    if not docid or any(character.isspace() for character in docid):
+        raise RetrievalError("Document fetch requires a non-empty docid without whitespace.")
+    encoded_docid = quote(docid, safe="")
+    url = f"{base_url.rstrip('/')}/v1/{index}/doc/{encoded_docid}"
     for attempt in range(retries + 1):
         try:
             return request_json(url, token, timeout)

@@ -10,17 +10,66 @@ SRC = Path(__file__).resolve().parents[1] / "src"
 sys.path.insert(0, str(SRC))
 
 from evaluate_run import evaluate  # noqa: E402
+from fuse_runs import fuse  # noqa: E402
 from analyze_runs import topic_metrics  # noqa: E402
 from query_rewrite import heuristic_rewrite  # noqa: E402
 from rankllm_rerank import compress_document, validate_ranking  # noqa: E402
 from rerank import RunItem, extract_document_text, fused_order, write_run as write_reranked_run  # noqa: E402
 from retrieve import Topic, normalize_candidates, read_topics, write_run  # noqa: E402
+from analyze_misses import read_qrels  # noqa: E402
+from build_ragdoll_pool import seed_judgments  # noqa: E402
 from retrieve_multiquery import build_queries, build_query_routes, query_cache_path  # noqa: E402
+from retrieve_facet_routes import lexical_jaccard, validate_routes  # noqa: E402
 from rrf import reciprocal_rank_fusion  # noqa: E402
 from validate_run import validate  # noqa: E402
 
 
 class RetrievalMvpTests(unittest.TestCase):
+    def test_ragdoll_seed_uses_stable_qid_docid_task_id(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            source, output = root / "old.jsonl", root / "seed.jsonl"
+            source.write_text(
+                '{"task_id":"old","status":"completed","qid":"q1","docid":"d1","judgment":2}\n',
+                encoding="utf-8",
+            )
+            self.assertEqual(seed_judgments(source, output), 1)
+            row = __import__("json").loads(output.read_text(encoding="utf-8"))
+            self.assertEqual(row["task_id"], "q1:d1")
+
+    def test_fusion_can_protect_head_ranking(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            first, second, output = root / "a.tsv", root / "b.tsv", root / "out.tsv"
+            first.write_text("q1 Q0 a 1 2 a\nq1 Q0 b 2 1 a\n", encoding="utf-8")
+            second.write_text("q1 Q0 c 1 2 b\nq1 Q0 b 2 1 b\n", encoding="utf-8")
+            fuse([(first, 1), (second, 2)], output, "fused", 60, 3, first, 1)
+            docids = [line.split()[2] for line in output.read_text(encoding="utf-8").splitlines()]
+            self.assertEqual(docids[0], "a")
+            self.assertEqual(set(docids), {"a", "b", "c"})
+
+    def test_typed_facet_routes_require_diverse_core_routes(self) -> None:
+        routes = validate_routes(
+            {
+                "routes": [
+                    {"type": "facet", "query": "nuclear energy safety accident consequences"},
+                    {"type": "facet", "query": "nuclear waste disposal long term storage"},
+                    {"type": "terminology", "query": "baseload electricity nuclear lifecycle emissions"},
+                    {"type": "geographic", "query": "nuclear policy France electricity generation"},
+                ]
+            }
+        )
+        self.assertEqual([route.route_type for route in routes], ["facet", "facet", "terminology", "geographic"])
+        self.assertLess(lexical_jaccard(routes[0].query, routes[1].query), 0.72)
+
+    def test_miss_analysis_applies_relevance_threshold(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            qrels = Path(directory) / "qrels.txt"
+            qrels.write_text("q1 0 d1 3\nq1 0 d2 1\nq1 0 d3 2\n", encoding="utf-8")
+            grades, relevant = read_qrels(qrels, threshold=2)
+            self.assertEqual(grades["q1"], {"d1": 3, "d2": 1, "d3": 2})
+            self.assertEqual(relevant["q1"], {"d1", "d3"})
+
     def test_end_to_end_mocked_retrieval_and_validation(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)

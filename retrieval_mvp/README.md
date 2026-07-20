@@ -24,8 +24,10 @@
 | `data/qrels/*.qrels` | 官方发布的 Codex、Ministral、Qwen 三套 UMBRELA 开发 qrels |
 | `src/healthcheck.py` | 检查 `.env.local` 和 Pyserini API 连通性，不打印 token |
 | `src/retrieve.py` | 调用官方 ClimbMix Pyserini REST API，生成 BM25 baseline |
+| `src/analyze_misses.py` | 逐 topic Recall/漏检统计、官方 doc lookup 和抽样 facet 分析 |
 | `src/query_rewrite.py` | 启发式或 DeepSeek 查询压缩、方面分解与本地缓存 |
 | `src/retrieve_multiquery.py` | 分发原查询、压缩查询和子查询，再做 weighted RRF |
+| `src/retrieve_facet_routes.py` | 生成差异化 facet/术语/实体/时间/地域路由并检索 |
 | `src/rrf.py` | 通用 reciprocal rank fusion 实现 |
 | `src/rerank.py` | MiniLM/BGE cross-encoder 候选重排与原排名保护 |
 | `src/dense_rerank.py` | BGE bi-encoder dense 打分及稀疏/稠密排名融合 |
@@ -34,6 +36,8 @@
 | `src/fuse_runs.py` | 融合多个 TREC run，并保留指定输出深度 |
 | `src/build_docstore.py` | 将 API 正文缓存整理为 SQLite docid 文本库 |
 | `src/export_candidates.py` | 将 runfile 和正文导出为 Ragnarök/RankLLM/RAGDoll 兼容 JSONL |
+| `src/build_ragdoll_pool.py` | 合并多个系统 Top-K，建立稳定 task id 的统一 RAGDoll pool |
+| `src/evaluate_ragdoll_pool.py` | 在统一 RAGDoll shallow pool 上公平比较多个 run |
 | `src/validate_run.py` | 校验 topic、docid、rank、分数及六列 TREC runfile 格式 |
 | `src/evaluate_run.py` | 纯 Python 快速诊断，使用 linear-gain nDCG |
 | `src/official_eval.py` | 调用 NIST `trec_eval` 并与本地实现交叉核对 |
@@ -184,3 +188,9 @@ Balanced v2
 - `src/rankllm_rerank.py`：文档相关句压缩、DeepSeek listwise 重排和严格输出校正。
 
 完整消融、三套 qrels 结果和不采用 Text2SQL/Text2Cypher 的原因见 `reports/advanced_retrieval_v3.md`。
+
+## Recall 分析与 V4 Candidate
+
+逐 topic 漏检分析、typed query routes、独立全库召回器核验和统一 RAGDoll pool 见 `reports/recall_v4_experiments.md`。
+
+当前 V4 candidate 使用 V3:typed-routes=`2:1`，并保护 V3 Top-10：nDCG@10 `0.7243`、nDCG@20 `0.6677`、Recall@100 `0.1095`、Recall@1000 `0.3477`、Recall@5000 `0.5519`、MAP `0.2061`。
